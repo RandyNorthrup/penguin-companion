@@ -1,4 +1,4 @@
-# Penguin companion
+# The penguin's art
 
 An opt-in desktop pet built from the owner's own character: an electric
 penguin, charcoal with a cream face and belly and a white penguin mark,
@@ -10,16 +10,18 @@ The companion was designed for Muse Desktop in
 [muse-spark-code](https://github.com/RandyNorthrup/muse-spark-code) (plan
 D91.30), where it walks along the status bar, reacts to the agent, and peeks
 up from behind the status bar while hidden. This repository holds the
-character, its animations and the tools that made them; the player that
-drives them on the desktop is not written yet.
+character's art: the reference sheet, the prompts and tools that made the
+animations, and how they were made. The animation strips themselves live in
+[`../penguin_companion/anim/`](../penguin_companion/anim), where the app loads
+them; paths below are relative to this folder.
 
 ## Files
 
 | Path                         | What it is                                                                                                        |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `source/reference-sheet.jpg` | The owner's character sheet (front, side, jump, charge, beam and angry poses), as supplied on 2026-10-05.         |
-| `anim/<name>.png`            | One horizontal strip per animation, 240 px tall, frames left to right, transparent background.                    |
-| `anim/manifest.json`         | Per animation: `frames`, the frame width `w` and height `h` in pixels, the playback rate `fps`, and `loop`.       |
+| `../penguin_companion/anim/<name>.png` | One horizontal strip per animation, 240 px tall, frames left to right, transparent background. |
+| `../penguin_companion/anim/manifest.json` | Per animation: `frames`, the frame width `w` and height `h` in pixels, the playback rate `fps`, `loop`, and the display `scale`. |
 | `tools/penguin-slice.py`     | Keys the chroma-green sheets, slices each grid into frames, aligns rows and writes the strips and the manifest.   |
 | `tools/penguin-cut.py`       | Cuts the six reference poses out of `source/reference-sheet.jpg` (used to check the strips against the original). |
 | `prompts.md`                 | The exact twelve image prompts that produced the sheets.                                                          |
@@ -44,12 +46,12 @@ strip.
 | `turn`   |      6 |   6 |  no   | Turning from facing right to facing left                       |
 | `beam`   |      6 |   8 |  no   | Celebrating (a merge, a green check)                           |
 
-The sheets were drawn at slightly different scales. Measured from the span of
-the orange ear tufts against `walk`, the display scale per animation is:
-`peek` 0.46, `talk` 0.83, `wave` 0.80, `think` 0.83, `hop` 0.93, `sleep`
-0.71, `charge` 1.17, `alert` 0.72, the rest 1. A player either bakes these
-scales into re-cut strips or applies them from the manifest; either way the
-character must be one size on screen in every animation.
+The sheets were drawn at slightly different scales, so the manifest gives each
+animation a display `scale` that keeps the penguin one size on screen. They
+were matched by standing height against `idle` (the ear-tuft span used at
+first changes with the pose, and made the penguin shrink when it talked):
+`hop` 1.13, `charge` 1.17, `alert` 1.05, `peek` 0.47 (matched by head width),
+the rest 1. `tools/penguin-slice.py` writes the same values.
 
 ## How the sheets were made
 
@@ -61,7 +63,7 @@ character must be one size on screen in every animation.
    shadows, text or grid lines.
 3. `tools/penguin-slice.py` removed the green, cut the grid, aligned each row
    by its lowest opaque pixel and mean centre, cropped every frame to the
-   union box of its animation, and wrote the strips at 240 px.
+   union box of its animation, and wrote the strips at 240 px into `../penguin_companion/anim/`.
 
 Under OpenAI's terms of use the person who prompts owns the output; the
 character itself is the owner's. Before the art ships anywhere, record this
@@ -75,7 +77,6 @@ Pillow installed); the strips here are the build input.
 
 ## Still to do
 
-- The desktop player itself.
 - 2× strips (480 px) for high-density displays, regenerated from the sheets
   with the same slicer, or re-prompted at a larger size if 2× upscaling blurs.
 - A left-facing `walk` is the mirrored strip; check that the lightning bolts

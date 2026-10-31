@@ -1,0 +1,98 @@
+{
+ "walk": {
+  "frames": 8,
+  "w": 180,
+  "h": 240,
+  "fps": 10,
+  "loop": true,
+  "scale": 1.0
+ },
+ "idle": {
+  "frames": 6,
+  "w": 234,
+  "h": 240,
+  "fps": 5,
+  "loop": true,
+  "scale": 1.0
+ },
+ "peek": {
+  "frames": 6,
+  "w": 373,
+  "h": 240,
+  "fps": 4,
+  "loop": false,
+  "scale": 0.47
+ },
+ "talk": {
+  "frames": 6,
+  "w": 245,
+  "h": 240,
+  "fps": 8,
+  "loop": true,
+  "scale": 1.0
+ },
+ "wave": {
+  "frames": 6,
+  "w": 240,
+  "h": 240,
+  "fps": 7,
+  "loop": true,
+  "scale": 1.0
+ },
+ "think": {
+  "frames": 6,
+  "w": 215,
+  "h": 240,
+  "fps": 4,
+  "loop": true,
+  "scale": 1.0
+ },
+ "hop": {
+  "frames": 6,
+  "w": 223,
+  "h": 240,
+  "fps": 9,
+  "loop": true,
+  "scale": 1.13
+ },
+ "sleep": {
+  "frames": 6,
+  "w": 228,
+  "h": 240,
+  "fps": 3,
+  "loop": true,
+  "scale": 1.0
+ },
+ "charge": {
+  "frames": 6,
+  "w": 258,
+  "h": 240,
+  "fps": 9,
+  "loop": true,
+  "scale": 1.17
+ },
+ "alert": {
+  "frames": 6,
+  "w": 251,
+  "h": 240,
+  "fps": 8,
+  "loop": true,
+  "scale": 1.05
+ },
+ "turn": {
+  "frames": 6,
+  "w": 225,
+  "h": 240,
+  "fps": 6,
+  "loop": false,
+  "scale": 1.0
+ },
+ "beam": {
+  "frames": 6,
+  "w": 310,
+  "h": 240,
+  "fps": 8,
+  "loop": false,
+  "scale": 1.0
+ }
+}

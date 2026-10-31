@@ -3,7 +3,8 @@
 Usage: python penguin-slice.py <sheets-dir> [out-dir]
   sheets-dir  the raw 1536 x 1024 sheets, one <name>.png per animation (kept
               outside the repository; see ../README.md)
-  out-dir     where the strips and manifest.json go (default: ../anim)
+  out-dir     where the strips and manifest.json go
+              (default: ../../penguin_companion/anim)
 Needs Pillow.
 """
 import json
@@ -14,23 +15,25 @@ from PIL import Image, ImageFilter
 if len(sys.argv) < 2:
     sys.exit(__doc__)
 SHEETS = sys.argv[1]
-OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "anim")
+OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "penguin_companion", "anim")
 os.makedirs(OUT, exist_ok=True)
 
-# name: (cols, rows, fps, loop)
+# name: (cols, rows, fps, loop, scale)
+# scale is the display scale that keeps the penguin one size on screen, matched
+# by standing height against `idle` (peek by head width).
 SPEC = {
-    "walk": (4, 2, 10, True),
-    "idle": (3, 2, 5, True),
-    "peek": (3, 2, 4, False),
-    "talk": (3, 2, 8, True),
-    "wave": (3, 2, 7, True),
-    "think": (3, 2, 4, True),
-    "hop": (3, 2, 9, True),
-    "sleep": (3, 2, 3, True),
-    "charge": (3, 2, 9, True),
-    "alert": (3, 2, 8, True),
-    "turn": (3, 2, 6, False),
-    "beam": (3, 2, 8, False),
+    "walk": (4, 2, 10, True, 1.0),
+    "idle": (3, 2, 5, True, 1.0),
+    "peek": (3, 2, 4, False, 0.47),
+    "talk": (3, 2, 8, True, 1.0),
+    "wave": (3, 2, 7, True, 1.0),
+    "think": (3, 2, 4, True, 1.0),
+    "hop": (3, 2, 9, True, 1.13),
+    "sleep": (3, 2, 3, True, 1.0),
+    "charge": (3, 2, 9, True, 1.17),
+    "alert": (3, 2, 8, True, 1.05),
+    "turn": (3, 2, 6, False, 1.0),
+    "beam": (3, 2, 8, False, 1.0),
 }
 FRAME_H = 240  # output frame height in px (2x for ~120 px on screen)
 
@@ -57,7 +60,7 @@ def key_image(img):
 
 
 manifest = {}
-for name, (cols, rows, fps, loop) in SPEC.items():
+for name, (cols, rows, fps, loop, display_scale) in SPEC.items():
     src = os.path.join(SHEETS, f"{name}.png")
     sheet = Image.open(src).convert("RGB")
     keyed = key_image(sheet)
@@ -110,7 +113,7 @@ for name, (cols, rows, fps, loop) in SPEC.items():
         strip.paste(f.resize((fw, FRAME_H), Image.LANCZOS), (i * fw, 0))
     path = os.path.join(OUT, f"{name}.png")
     strip.save(path, optimize=True)
-    manifest[name] = {"frames": len(frames), "w": fw, "h": FRAME_H, "fps": fps, "loop": loop}
+    manifest[name] = {"frames": len(frames), "w": fw, "h": FRAME_H, "fps": fps, "loop": loop, "scale": display_scale}
     print(name, len(frames), fw, FRAME_H, os.path.getsize(path))
 
 with open(os.path.join(OUT, "manifest.json"), "w", encoding="utf-8") as fh:

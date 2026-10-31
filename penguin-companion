@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Run the penguin companion from this folder, without installing it.
+
+Symlink it onto your PATH to use it from anywhere:
+    ln -s "$PWD/penguin-companion" ~/.local/bin/penguin-companion
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from penguin_companion.cli import main  # noqa: E402
+
+raise SystemExit(main())

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "penguin-companion"
+dynamic = ["version"]
+description = "An electric penguin that lives on your desktop and helps out"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["PyQt6>=6.5"]
+
+[project.optional-dependencies]
+battery = ["psutil"]
+test = ["pytest"]
+
+[project.scripts]
+penguin-companion = "penguin_companion.cli:main"
+
+[tool.setuptools]
+packages = ["penguin_companion"]
+
+[tool.setuptools.dynamic]
+version = { attr = "penguin_companion.__version__" }
+
+[tool.setuptools.package-data]
+penguin_companion = ["anim/*.png", "anim/manifest.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

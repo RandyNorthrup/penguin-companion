@@ -578,7 +578,8 @@ class Cline(Agent):
     def _script(self, ours: str) -> str:
         if sys.platform == "win32":
             argv = notify_argv(ours, self.name, stdin=False)
-            return f"# {MARK}\n& " + " ".join(f"'{a}'" for a in argv) + "\nexit 0\n"
+            quoted = " ".join("'" + a.replace("'", "''") + "'" for a in argv)  # PowerShell single quotes
+            return f"# {MARK}\n& {quoted}\nexit 0\n"
         return f"#!/bin/sh\n# {MARK}\n{shell_line(notify_argv(ours, self.name))} || true\n"
 
     def connected(self) -> bool:

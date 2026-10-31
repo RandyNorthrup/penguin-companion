@@ -160,7 +160,8 @@ def test_cline_scripts_and_your_own_are_safe():
     cline.config_path().mkdir(parents=True)
     cline.connect()
     script = cline._file("TaskComplete")
-    assert cline.connected() and "notify done --source cline" in script.read_text()
+    words = script.read_text().replace("'", "").split()
+    assert cline.connected() and words[words.index("notify") :][:4] == ["notify", "done", "--source", "cline"]
     if sys.platform != "win32":
         assert script.stat().st_mode & 0o111
     cline.disconnect()

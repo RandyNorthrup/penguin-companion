@@ -64,8 +64,14 @@ def event_from(
     return {"type": "event", "event": name, "source": source or "agent", "message": message or ""}
 
 
+ACK = b"ok\n"  # the companion's reply to each message, so a sender knows it arrived
+
+
 def send(message: dict[str, Any], timeout: float = 0.5) -> bool:
-    """Deliver a message to the running companion. False if it isn't running."""
+    """Deliver a message to the running companion. False if it isn't running.
+
+    Waits (up to `timeout`) for the companion to say it got the message
+    before hanging up; on Windows, hanging up first can lose it."""
     data = (json.dumps(message) + "\n").encode("utf-8")
     if sys.platform == "win32":
         return _send_pipe(data, timeout)
@@ -74,6 +80,10 @@ def send(message: dict[str, Any], timeout: float = 0.5) -> bool:
             sock.settimeout(timeout)
             sock.connect(paths.server_name())
             sock.sendall(data)
+            try:
+                sock.recv(len(ACK))
+            except OSError:
+                pass  # sent; the companion was just slow to answer
         return True
     except OSError:
         return False
@@ -82,12 +92,14 @@ def send(message: dict[str, Any], timeout: float = 0.5) -> bool:
 def _send_pipe(data: bytes, timeout: float) -> bool:
     from PyQt6.QtNetwork import QLocalSocket
 
+    ms = int(timeout * 1000)
     sock = QLocalSocket()
     sock.connectToServer(paths.server_name())
-    if not sock.waitForConnected(int(timeout * 1000)):
+    if not sock.waitForConnected(ms):
         return False
     sock.write(data)
-    sock.waitForBytesWritten(int(timeout * 1000))
+    sock.waitForBytesWritten(ms)
+    sock.waitForReadyRead(ms)
     sock.disconnectFromServer()
     return True
 

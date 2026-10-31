@@ -450,14 +450,24 @@ class Companion(QObject):
         while self.server.hasPendingConnections():
             sock = self.server.nextPendingConnection()
             buffer = bytearray()
-            sock.readyRead.connect(lambda sock=sock, buffer=buffer: buffer.extend(bytes(sock.readAll())))
-            sock.disconnected.connect(lambda sock=sock, buffer=buffer: self._received(sock, buffer))
+            sock.readyRead.connect(partial(self._received, sock, buffer, False))
+            sock.disconnected.connect(partial(self._received, sock, buffer, True))
+            self._received(sock, buffer, False)
 
-    def _received(self, sock, buffer: bytearray) -> None:
+    def _received(self, sock, buffer: bytearray, closed: bool) -> None:
+        """Handle each complete line as it arrives and answer it, so the
+        sender can hang up knowing it got here."""
         buffer.extend(bytes(sock.readAll()))
-        sock.deleteLater()
-        for message in events.parse_lines(bytes(buffer)):
-            self.handle(message)
+        while b"\n" in buffer or (closed and buffer):
+            line, _, rest = bytes(buffer).partition(b"\n")
+            buffer[:] = rest
+            for message in events.parse_lines(line):
+                self.handle(message)
+            if not closed:
+                sock.write(events.ACK)
+                sock.flush()
+        if closed:
+            sock.deleteLater()
 
     def handle(self, message: dict) -> None:
         kind = message.get("type")

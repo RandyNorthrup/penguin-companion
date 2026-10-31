@@ -1,8 +1,10 @@
 """The whole companion, headless: build it, poke it, check it reacts."""
 
 import os
+import subprocess
 import sys
 import tempfile
+import time
 
 import pytest
 
@@ -60,12 +62,21 @@ def test_greets_and_reacts_to_agents(companion):
     assert c.stage.message_visible()
 
 
-def test_socket_round_trip(companion):
-    from penguin_companion import events
-
-    assert events.send({"type": "say", "text": "hello from a hook"})
-    spin(0.5)
-    assert companion.stage.bubble.title == "Sparky"
+def test_a_hook_reaches_it(companion):
+    """A separate process, as a hook would be, says something and hears back."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    code = (
+        "import sys; sys.path.insert(0, sys.argv[1]);"
+        "from penguin_companion import events;"
+        "sys.exit(0 if events.send({'type': 'say', 'text': 'hello from a hook'}, timeout=5) else 1)"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", code, root])
+    deadline = time.monotonic() + 20
+    while proc.poll() is None and time.monotonic() < deadline:
+        spin(0.05)
+    assert proc.returncode == 0
+    spin(0.2)
+    assert companion.stage.bubble.title == "Sparky" and "hello from a hook" in companion.stage.bubble.doc.toPlainText()
 
 
 def test_local_commands_and_reminders(companion):

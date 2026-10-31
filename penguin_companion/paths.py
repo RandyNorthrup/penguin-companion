@@ -42,7 +42,7 @@ def state_file() -> Path:
 def work_dir() -> Path:
     """An empty folder that command-line AI brains run in, away from your files."""
     path = state_dir() / "work"
-    path.mkdir(parents=True, exist_ok=True)
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
     return path
 
 

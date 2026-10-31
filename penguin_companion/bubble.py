@@ -5,10 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, QSizeF, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, QPointF, QRectF, QSizeF, Qt, QUrl, pyqtSignal
 from PyQt6.QtGui import (
     QAbstractTextDocumentLayout,
     QColor,
+    QDesktopServices,
     QFont,
     QFontMetricsF,
     QGuiApplication,
@@ -25,6 +26,12 @@ PAD = 14
 TAIL = 12
 RADIUS = 14
 FADE = 0.14  # seconds
+
+
+def open_link(url: QUrl) -> None:
+    """Links in answers open in the browser; nothing else (no files, no apps)."""
+    if url.scheme() in ("http", "https", "mailto"):
+        QDesktopServices.openUrl(url)
 
 
 def colours() -> tuple[QColor, QColor]:
@@ -226,7 +233,8 @@ class AskBox(QWidget):
         close.clicked.connect(self.dismiss)
         top.addWidget(close)
         layout.addLayout(top)
-        self.answer = QTextBrowser(openExternalLinks=True)
+        self.answer = QTextBrowser(openLinks=False)
+        self.answer.anchorClicked.connect(open_link)
         self.answer.setFrameShape(QTextBrowser.Shape.NoFrame)
         self.answer.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.answer.document().setDocumentMargin(2)

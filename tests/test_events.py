@@ -55,8 +55,40 @@ def test_send_without_a_running_companion(monkeypatch, tmp_path):
     assert events.send({"type": "show"}) is False
 
 
-def test_hooks_snippets_are_valid():
-    text = cli.hooks("claude")
-    config = json.loads(text.split("\n", 1)[1])
-    assert set(config["hooks"]) == {"UserPromptSubmit", "Notification", "Stop"}
-    assert "notify" in cli.hooks("codex") and "needs-you" in cli.hooks("any")
+def test_clean_keeps_only_known_short_strings():
+    big = "x" * 10_000
+    cleaned = events.clean({"type": "say", "text": big, "evil": {"nested": 1}, "source": 5})
+    assert cleaned == {"type": "say", "text": "x" * 2000}
+
+
+def test_notify_never_waits_on_an_open_stdin(monkeypatch):
+    import os
+    import time
+
+    sent = []
+    monkeypatch.setattr(events, "send", lambda m, timeout=0.5: sent.append(m) or True)
+    monkeypatch.delenv(events.INTERNAL_ENV, raising=False)
+    read_end, write_end = os.pipe()  # a hook runner that never closes stdin
+    monkeypatch.setattr("sys.stdin", os.fdopen(read_end, "r"))
+    started = time.monotonic()
+    assert cli.notify(["done", "--source", "x", "--stdin"]) == 0
+    assert time.monotonic() - started < 2 and sent[0]["event"] == "done"
+    os.close(write_end)
+
+
+def test_payload_messages_from_other_agents():
+    assert events.event_from("done", {"lastAssistantMessage": "grok says"})["message"] == "grok says"
+    assert events.event_from("done", {"prompt_response": "gemini says"})["message"] == "gemini says"
+    assert events.event_from("needs-you", {"notification": {"message": "cline says"}})["message"] == "cline says"
+    assert events.event_from("working", {"prompt": "my secret prompt"})["message"] == ""
+
+
+def test_helpers_inside_an_agent_are_ignored():
+    assert events.event_from("done", {"subagentType": "explore"}) is None
+
+
+def test_borrowed_claude_hooks_are_relabelled(monkeypatch):
+    monkeypatch.setenv("GROK_HOOK_EVENT", "stop")
+    assert cli._real_source("claude") == "grok" and cli._real_source("codex") == "codex"
+    monkeypatch.delenv("GROK_HOOK_EVENT")
+    assert cli._real_source("claude") == "claude"

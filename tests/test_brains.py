@@ -8,9 +8,14 @@ def test_presets_and_overrides(monkeypatch):
     found = brains.load_brains(
         {"brains": {"grok": {"command": ["grok", "-p", "{prompt}", "--disable-web-search"]}, "mine": {"type": "command", "command": ["my-llm"]}, "broken": {"type": "nope"}}}
     )
-    assert list(found)[:4] == ["claude", "codex", "gemini", "grok"]
+    assert list(found)[0] == "claude" and {"codex", "gemini", "grok", "muse"} <= set(found)
     assert found["grok"].command[-1] == "--disable-web-search" and found["grok"].label == "Grok"
     assert "mine" in found and "broken" not in found
+
+
+@pytest.fixture(autouse=True)
+def nothing_running_here(monkeypatch):
+    monkeypatch.setattr(brains, "reachable", lambda url, timeout=0.15: False)
 
 
 def test_choose_prefers_picked_then_configured_then_first(monkeypatch):
@@ -68,5 +73,76 @@ def test_openai_request_and_parse():
         brains.parse_openai({"error": {"message": "quota"}})
 
 
+def test_keys_only_go_over_https_or_to_this_computer():
+    for url in ("https://api.example.com/v1", "http://localhost:11434/v1", "http://127.0.0.1:1234/v1", "http://[::1]:8080/v1"):
+        brains.check_url(url)
+    for url in ("http://api.example.com/v1", "http://192.168.1.5:11434/v1", "ftp://x", "http://localhost.evil.com/v1"):
+        with pytest.raises(BrainError):
+            brains.check_url(url)
+
+
+def test_custom_headers_read_keys_from_the_environment(monkeypatch):
+    monkeypatch.setenv("AZURE_KEY", "secret")
+    brain = brains.load_brains({"brains": {"azure": {"type": "openai", "url": "https://x/v1", "model": "m", "headers": {"api-key": "${AZURE_KEY}"}, "extra": {"temperature": 0.2}}}})["azure"]
+    headers, body = brains.openai_request(brain, "S", [], "q")
+    assert headers["api-key"] == "secret" and body["temperature"] == 0.2 and "authorization" not in headers
+
+
 def test_clean_output_strips_terminal_colours():
     assert brains.clean_output("\x1b[1;32mDone\x1b[0m\n") == "Done"
+
+
+def test_auto_never_picks_a_paid_api(monkeypatch):
+    monkeypatch.setattr(brains.shutil, "which", lambda name: None)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    found = brains.load_brains({})
+    assert found["openai-api"].available() and brains.choose(found, "auto", None) is None
+    assert brains.choose(found, "auto", "openai-api").name == "openai-api"
+    assert brains.choose(found, "openai-api", None).name == "openai-api"
+    custom = brains.load_brains({"brains": {"mine": {"type": "openai", "url": "https://x/v1", "model": "m", "auto": True}}})
+    assert brains.choose(custom, "auto", None).name == "mine"
+
+
+def test_a_running_local_server_is_picked_with_its_own_model(monkeypatch):
+    monkeypatch.setattr(brains.shutil, "which", lambda name: None)
+    monkeypatch.setattr(brains, "reachable", lambda url, timeout=0.15: "11434" in url)
+    found = brains.load_brains({})
+    chosen = brains.choose(found, "auto", None)
+    assert chosen.name == "ollama" and chosen.model == "auto"
+    assert found["lmstudio"].why_not() == "not running"
+    assert brains.first_model({"object": "list", "data": [{"id": "qwen3.8:27b"}]}) == "qwen3.8:27b"
+    with pytest.raises(BrainError):
+        brains.first_model({"data": []})
+
+
+def test_bedrock_needs_its_region(monkeypatch):
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "t")
+    monkeypatch.delenv("AWS_REGION", raising=False)
+    bedrock = brains.load_brains({})["bedrock-api"]
+    assert not bedrock.available() and "AWS_REGION" in bedrock.why_not()
+    monkeypatch.setenv("AWS_REGION", "us-west-2")
+    assert bedrock.available()
+    assert brains.endpoint(bedrock)[0] == "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1/chat/completions"
+
+
+def test_responses_api():
+    brain = Brain("x", "responses", url="https://api.x.ai/v1", model="grok-4.7", api_key="k")
+    url, request, parse = brains.endpoint(brain)
+    headers, body = request(brain, "SYS", [("hi", "hello")], "and?")
+    assert url == "https://api.x.ai/v1/responses" and body["instructions"] == "SYS" and body["input"][-1] == {"role": "user", "content": "and?"}
+    reply = {"output": [{"type": "reasoning"}, {"type": "message", "content": [{"type": "output_text", "text": " Hi! "}]}]}
+    assert parse(reply) == "Hi!" and parse({"output_text": "yo"}) == "yo"
+    with pytest.raises(BrainError, match="quota"):
+        parse({"error": {"message": "quota"}})
+
+
+def test_every_preset_is_well_formed():
+    for brain in brains.load_brains({}).values():
+        assert brain.label and brain.type in brains.TYPES
+        if brain.type == "command":
+            assert brain.command
+        else:
+            assert (brain.url or brain.type == "anthropic") and brain.model
+            if not brain.local and brain.url:
+                brains.check_url(brains.expand(brain.url).replace("..", ".x."))
+                assert brain.api_key_env

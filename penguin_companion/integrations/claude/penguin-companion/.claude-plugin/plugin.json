@@ -1,0 +1,16 @@
+{
+  "name": "penguin-companion",
+  "version": "1.0.0",
+  "description": "Lets the penguin companion react while Claude Code works: it thinks while Claude works, waves when Claude needs you, and hops when it's done.",
+  "author": {
+    "name": "Randy Northrup"
+  },
+  "homepage": "https://github.com/RandyNorthrup/penguin-companion",
+  "repository": "https://github.com/RandyNorthrup/penguin-companion",
+  "license": "MIT",
+  "keywords": [
+    "desktop-pet",
+    "notifications",
+    "hooks"
+  ]
+}

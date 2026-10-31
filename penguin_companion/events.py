@@ -36,7 +36,8 @@ _PAYLOAD_EVENTS = {
     "agent-turn-complete": "done",
 }
 
-_MESSAGE_KEYS = ("message", "last-assistant-message", "last_assistant_message")
+# Where agents put a human-readable message: Claude Code, Codex, Grok, Gemini. Never the prompt.
+_MESSAGE_KEYS = ("message", "last-assistant-message", "last_assistant_message", "lastAssistantMessage", "prompt_response")
 
 
 def normalize(name: str | None) -> str | None:
@@ -50,6 +51,8 @@ def event_from(
 ) -> dict[str, Any] | None:
     """The message to send for a hook call, or None if there's nothing to say."""
     payload = payload or {}
+    if payload.get("subagentType") or payload.get("subagent_type"):
+        return None  # a helper inside the agent, not the agent you're talking to
     name = normalize(event)
     if name is None and event is None:
         hook = payload.get("hook_event_name") or payload.get("type")
@@ -57,14 +60,17 @@ def event_from(
     if name is None:
         return None
     if message is None:
-        for key in _MESSAGE_KEYS:
-            if isinstance(payload.get(key), str) and payload[key].strip():
-                message = payload[key].strip()
+        nested = payload.get("notification") if isinstance(payload.get("notification"), dict) else {}  # Cline
+        for value in [payload.get(key) for key in _MESSAGE_KEYS] + [nested.get("message")]:
+            if isinstance(value, str) and value.strip():
+                message = value.strip()
                 break
     return {"type": "event", "event": name, "source": source or "agent", "message": message or ""}
 
 
 ACK = b"ok\n"  # the companion's reply to each message, so a sender knows it arrived
+MAX_MESSAGE = 64 * 1024  # bytes; anything longer is dropped
+_LIMITS = {"type": 20, "event": 20, "source": 40, "message": 2000, "text": 2000}
 
 
 def send(message: dict[str, Any], timeout: float = 0.5) -> bool:
@@ -102,6 +108,16 @@ def _send_pipe(data: bytes, timeout: float) -> bool:
     sock.waitForReadyRead(ms)
     sock.disconnectFromServer()
     return True
+
+
+def clean(message: dict[str, Any]) -> dict[str, Any]:
+    """Only the fields the companion uses, as strings of sensible length."""
+    out = {}
+    for key, limit in _LIMITS.items():
+        value = message.get(key)
+        if isinstance(value, str):
+            out[key] = value[:limit]
+    return out
 
 
 def parse_lines(data: bytes) -> list[dict[str, Any]]:

@@ -30,13 +30,16 @@ def companion(tmp_path, monkeypatch):
     # socket paths are limited to ~100 characters, so keep this one short
     run = tempfile.mkdtemp(prefix="pc-", dir=None if sys.platform == "win32" else "/tmp")
     monkeypatch.setenv("XDG_RUNTIME_DIR", run)
-    from penguin_companion import app as appmod, paths
+    from penguin_companion import agents, app as appmod, paths
     from penguin_companion.settings import State
+
+    monkeypatch.setattr(agents, "_run_json", lambda argv, what: [])  # never run a real agent's command line
 
     State(paths.state_file(), {"name": "Sparky", "x": 600}).save()
     qapp = QApplication.instance() or QApplication([])
     qapp.setQuitOnLastWindowClosed(False)
     server = QLocalServer()
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
     QLocalServer.removeServer(paths.server_name())
     assert server.listen(paths.server_name()), server.errorString()
     c = appmod.Companion(qapp, server)

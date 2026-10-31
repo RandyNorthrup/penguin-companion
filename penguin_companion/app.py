@@ -7,16 +7,17 @@ import os
 import shutil
 import signal
 import sys
+import threading
 import time
 from datetime import date, datetime
 from functools import partial
 
-from PyQt6.QtCore import QObject, QPoint, QProcess, QTimer, QUrl, pyqtSlot
+from PyQt6.QtCore import QObject, QPoint, QProcess, QTimer, QUrl, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QActionGroup, QDesktopServices, QGuiApplication, QIcon
 from PyQt6.QtNetwork import QLocalServer
 from PyQt6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import autostart, brains, events, heads_up, paths, reminders
+from . import agents, autostart, brains, events, heads_up, paths, reminders
 from .behavior import Behavior
 from .bubble import AskBox
 from .penguin import Stage
@@ -37,6 +38,27 @@ I also understand, without any AI:
 """
 
 
+class Background(QObject):
+    """Runs slow work (another tool's command line) off the screen thread and
+    hands the result back on it."""
+
+    finished = pyqtSignal(object, object)
+
+    def __init__(self):
+        super().__init__()
+        self.finished.connect(lambda then, result: then(result))
+
+    def run(self, work, then) -> None:
+        def go() -> None:
+            try:
+                result = work()
+            except Exception as exc:  # reported in a bubble, never fatal
+                result = exc
+            self.finished.emit(then, result)
+
+        threading.Thread(target=go, daemon=True).start()
+
+
 def pretty(source: str) -> str:
     return PRETTY.get(source.lower(), source[:1].upper() + source[1:])
 
@@ -54,6 +76,8 @@ class Companion(QObject):
         self.watcher = self._make_watcher()
         self.history: list[tuple[str, str]] = []
         self.agents: dict[str, tuple[str, float]] = {}  # source: (state, since)
+        self._last_event: tuple[str, str] | None = None
+        self._last_event_at = 0.0
         self._alert_key: str | None = None
         self._waiting: list = []  # messages held back while an alert is up
         self._asking_name = False
@@ -102,6 +126,9 @@ class Companion(QObject):
         self._every(int(self.config["heads_up"]["updates_every_hours"] * 3600_000), self._check_updates)
         QTimer.singleShot(120_000, self._check_updates)
         QTimer.singleShot(1500, self._greet)
+        self.background = Background()
+        self._agent_status: dict[str, str] = {}
+        QTimer.singleShot(3000, self._refresh_agents)
 
     # -- small helpers
 
@@ -234,10 +261,11 @@ class Companion(QObject):
             return
         brain = self._brain()
         if brain is None:
-            names = ", ".join(b.label for b in self.brains.values())
             self.ask_box.set_answer(
-                f"I don't have an AI brain yet. Install one of these or set its API key: {names}. "
-                "Then pick it from my menu under **Brain**.\n\n" + HELP
+                "I haven't found an AI to ask yet. Any of these works: an AI command-line tool you're "
+                "signed in to (Claude Code, Codex, Gemini CLI, Muse Code, Grok...), a model server on this "
+                "computer (Ollama, LM Studio, llama.cpp, vLLM), or an API key, picked under **Brain** in my "
+                "menu.\n\n" + HELP
             )
             return
         self._question = text
@@ -423,9 +451,10 @@ class Companion(QObject):
     def _check_updates(self) -> None:
         if not self.config["heads_up"]["updates"]:
             return
+        # Both read what the system already knows (no network): the desktop's own updater refreshes it.
         checks = [
             ("apt", ["apt", "list", "--upgradable"], heads_up.count_apt),
-            ("flatpak", ["flatpak", "remote-ls", "--updates", "--columns=application"], heads_up.count_flatpak),
+            ("flatpak", ["flatpak", "remote-ls", "--updates", "--cached", "--columns=application"], heads_up.count_flatpak),
         ]
         checks = [c for c in checks if shutil.which(c[1][0])]
         self._update_counts = {}
@@ -458,6 +487,10 @@ class Companion(QObject):
         """Handle each complete line as it arrives and answer it, so the
         sender can hang up knowing it got here."""
         buffer.extend(bytes(sock.readAll()))
+        if len(buffer) > events.MAX_MESSAGE:
+            buffer.clear()
+            sock.abort()
+            return
         while b"\n" in buffer or (closed and buffer):
             line, _, rest = bytes(buffer).partition(b"\n")
             buffer[:] = rest
@@ -470,6 +503,7 @@ class Companion(QObject):
             sock.deleteLater()
 
     def handle(self, message: dict) -> None:
+        message = events.clean(message)
         kind = message.get("type")
         now = self._now()
         if kind == "event" and message.get("event") in events.EVENTS:
@@ -490,6 +524,10 @@ class Companion(QObject):
 
     def _agent_event(self, event: str, source: str, text: str) -> None:
         now = self._now()
+        # The same news twice in a moment (an agent running its own hook and a borrowed one): once is enough.
+        if self._last_event == (source, event) and now - self._last_event_at < 1.5:
+            return
+        self._last_event, self._last_event_at = (source, event), now
         label = pretty(source)
         key = f"agent:{source}"
         self.behavior.wake(now)
@@ -504,7 +542,9 @@ class Companion(QObject):
             self.agents.pop(source, None)
             if self._alert_key == key:
                 self.stage.dismiss_message()
-            snippet = text if len(text) <= 220 else text[:217].rstrip() + "…"
+            # An agent's reply can hold code or secrets: on screen only if you said so.
+            show = bool(self.config["agents"]["show_replies"])
+            snippet = (text if len(text) <= 220 else text[:217].rstrip() + "…") if show else ""
             if event == "done":
                 self.behavior.react("hop", now)
                 if not self.ask_box.isVisible():
@@ -549,6 +589,8 @@ class Companion(QObject):
                 sub.addAction(f"✕  {reminders.describe(r.due, time.time())}: {r.text}", partial(self._cancel, r.id))
         m.addSeparator()
         self._brain_menu(m.addMenu("Brain"))
+        self._agents_menu(m.addMenu("AI agents"))
+        self._refresh_agents()
         walk = m.addAction("Walk around")
         walk.setCheckable(True)
         walk.setChecked(self.behavior.walk_enabled)
@@ -572,15 +614,64 @@ class Companion(QObject):
         auto.setChecked(not picked)
         auto.triggered.connect(partial(self._pick_brain, None))
         group.addAction(auto)
-        sub.addSeparator()
-        for brain in self.brains.values():
-            ok = brain.available()
-            action = sub.addAction(brain.label if ok else f"{brain.label} ({brain.why_not()})")
+        groups = (
+            ("AI tools you're signed in to", lambda b: b.type == "command"),
+            ("On this computer", lambda b: b.local),
+            ("APIs (billed per question; pick one to use it)", lambda b: b.type != "command" and not b.local),
+        )
+        for title, belongs in groups:
+            sub.addSection(title)
+            for brain in (b for b in self.brains.values() if belongs(b)):
+                ok = brain.available()
+                action = sub.addAction(brain.label if ok else f"{brain.label} ({brain.why_not()})")
+                action.setCheckable(True)
+                action.setEnabled(ok)
+                action.setChecked(picked == brain.name)
+                action.triggered.connect(partial(self._pick_brain, brain.name))
+                group.addAction(action)
+
+    # -- connecting AI agents
+
+    def _refresh_agents(self) -> None:
+        self.background.run(lambda: {a.name: a.status() for a in agents.AGENTS}, self._agents_known)
+
+    def _agents_known(self, status) -> None:
+        if isinstance(status, dict):
+            self._agent_status = status
+
+    def _agents_menu(self, sub: QMenu) -> None:
+        sub.addSection("Let them tell me what they're doing")
+        missing = []
+        for agent in agents.AGENTS:
+            state = self._agent_status.get(agent.name, "found" if agent.detected() else "not found")
+            if state == "not found":
+                missing.append(agent.label)
+                continue
+            action = sub.addAction(agent.label + (" (installed but off)" if state == "installed but off" else ""))
             action.setCheckable(True)
-            action.setEnabled(ok)
-            action.setChecked(picked == brain.name)
-            action.triggered.connect(partial(self._pick_brain, brain.name))
-            group.addAction(action)
+            action.setChecked(state == "connected")
+            action.toggled.connect(partial(self._set_agent, agent))
+        if missing:
+            note = sub.addAction("Not found here: " + ", ".join(missing))
+            note.setEnabled(False)
+        sub.addSeparator()
+        sub.addAction("Another agent or script…", self._other_agents)
+
+    def _set_agent(self, agent: agents.Agent, on: bool) -> None:
+        self.say(f"{'Connecting' if on else 'Disconnecting'} {agent.label}…", timeout_s=20)
+        self.background.run(agent.connect if on else agent.disconnect, partial(self._agent_set, agent))
+
+    def _agent_set(self, agent: agents.Agent, result) -> None:
+        if isinstance(result, Exception):
+            self.say(f"Couldn't change {agent.label}", str(result), [("OK", None)], timeout_s=None)
+        else:
+            self.behavior.react("hop", self._now())
+            self.say(agent.label, str(result), timeout_s=12)
+        self._refresh_agents()
+
+    def _other_agents(self) -> None:
+        self.open_ask()
+        self.ask_box.set_answer("Any agent or script can tell me what it's doing:\n\n```\n" + agents.generic() + "\n```")
 
     def _pick_brain(self, name: str | None) -> None:
         self.state.set("brain", name)
@@ -629,6 +720,7 @@ def run() -> int:
     app.setApplicationDisplayName("Penguin companion")
     app.setQuitOnLastWindowClosed(False)
     server = QLocalServer()
+    server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)  # only you can talk to it
     name = paths.server_name()
     QLocalServer.removeServer(name)
     if not server.listen(name):

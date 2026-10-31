@@ -1,19 +1,30 @@
 """Brains: whichever AI answers the questions you ask the penguin.
 
-A brain is either a command-line tool you're already signed in to (Claude
-Code, Codex, Gemini CLI, Grok...) or an HTTP API: the Anthropic Messages API,
-or the OpenAI chat completions API that most other providers also speak.
+A brain is one of:
+- a command-line AI tool you're already signed in to (Claude Code, Codex,
+  Gemini CLI, Muse Code, Grok...), run in an empty folder with its tools off;
+- a model server on this computer (Ollama, LM Studio, llama.cpp, vLLM);
+- an HTTP API: the Anthropic Messages API, OpenAI's Responses API, or the
+  OpenAI-compatible Chat Completions API most other providers speak.
+
+"auto" only ever picks the first two kinds. An API costs money per question,
+so it answers only once you've picked it (menu or settings), even when its
+key is set.
 """
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import tempfile
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from PyQt6.QtCore import QByteArray, QObject, QProcess, QProcessEnvironment, QTimer, QUrl, pyqtSignal
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
@@ -21,29 +32,80 @@ from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkReques
 from . import paths
 from .events import INTERNAL_ENV
 
-# The order "auto" tries them in: the tools you're signed in to first, since
-# they cost nothing extra, then the APIs whose key is set.
+# Model ids current as of October 2026; any of them can be changed in the settings.
 PRESETS: dict[str, dict] = {
+    # Command-line tools, with your own sign-in.
     "claude": {"type": "command", "label": "Claude Code", "command": ["claude", "-p", "--tools", "", "--no-session-persistence"]},
     "codex": {
         "type": "command",
         "label": "Codex",
         "command": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--output-last-message", "{output_file}", "-"],
     },
-    "gemini": {"type": "command", "label": "Gemini CLI", "command": ["gemini"]},
-    "grok": {"type": "command", "label": "Grok", "command": ["grok", "--prompt-file", "{prompt_file}"]},
+    # Gemini reads the question from stdin and appends -p; tools needing approval are refused headless.
+    "gemini": {"type": "command", "label": "Gemini CLI", "command": ["gemini", "-o", "text", "-p", "Answer the question above."]},
+    "muse": {"type": "command", "label": "Muse Code", "command": ["muse", "exec", "--preset", "empty", "--prompt-file", "{prompt_file}"]},
+    "grok": {
+        "type": "command",
+        "label": "Grok",
+        "command": ["grok", "--prompt-file", "{prompt_file}", "--tools", "read_file,grep,list_dir", "--disable-web-search",
+                    "--permission-mode", "dontAsk", "--output-format", "plain"],
+    },
+    "copilot": {"type": "command", "label": "GitHub Copilot CLI", "command": ["copilot", "-s", "--no-ask-user", "--available-tools=view,grep,glob"]},
+    # Model servers on this computer: used when they're running, with whatever model they have loaded.
+    "ollama": {"type": "openai", "label": "Ollama", "url": "http://localhost:11434/v1", "model": "auto", "local": True},
+    "lmstudio": {"type": "openai", "label": "LM Studio", "url": "http://localhost:1234/v1", "model": "auto", "local": True},
+    "llamacpp": {"type": "openai", "label": "llama.cpp", "url": "http://127.0.0.1:9931/v1", "model": "auto", "local": True},
+    "vllm": {"type": "openai", "label": "vLLM", "url": "http://localhost:8000/v1", "model": "auto", "local": True},
+    # APIs: pick one to use it.
     "anthropic-api": {"type": "anthropic", "label": "Anthropic API", "model": "claude-opus-5-5", "api_key_env": "ANTHROPIC_API_KEY"},
-    "openai-api": {"type": "openai", "label": "OpenAI API", "url": "https://api.openai.com/v1", "model": "gpt-5-mini", "api_key_env": "OPENAI_API_KEY"},
+    "openai-api": {"type": "responses", "label": "OpenAI API", "url": "https://api.openai.com/v1", "model": "gpt-6.1-sol", "api_key_env": "OPENAI_API_KEY"},
     "gemini-api": {
         "type": "openai",
         "label": "Gemini API",
         "url": "https://generativelanguage.googleapis.com/v1beta/openai",
-        "model": "gemini-2.5-flash",
+        "model": "gemini-3.8-flash",
         "api_key_env": "GEMINI_API_KEY",
     },
-    "xai-api": {"type": "openai", "label": "xAI API", "url": "https://api.x.ai/v1", "model": "grok-4", "api_key_env": "XAI_API_KEY"},
-    "openrouter": {"type": "openai", "label": "OpenRouter", "url": "https://openrouter.ai/api/v1", "model": "openrouter/auto", "api_key_env": "OPENROUTER_API_KEY"},
+    "xai-api": {"type": "responses", "label": "xAI API", "url": "https://api.x.ai/v1", "model": "grok-4.7", "api_key_env": "XAI_API_KEY"},
+    "meta-api": {"type": "openai", "label": "Meta Model API (Muse Spark)", "url": "https://api.meta.ai/v1", "model": "muse-spark-1.3", "api_key_env": "MODEL_API_KEY"},
+    "mistral-api": {"type": "openai", "label": "Mistral API", "url": "https://api.mistral.ai/v1", "model": "mistral-small-latest", "api_key_env": "MISTRAL_API_KEY"},
+    "deepseek-api": {"type": "openai", "label": "DeepSeek API", "url": "https://api.deepseek.com", "model": "deepseek-v4-pro", "api_key_env": "DEEPSEEK_API_KEY"},
+    "groq-api": {"type": "openai", "label": "Groq", "url": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b", "api_key_env": "GROQ_API_KEY"},
+    "together-api": {"type": "openai", "label": "Together AI", "url": "https://api.together.ai/v1", "model": "moonshotai/Kimi-K3", "api_key_env": "TOGETHER_API_KEY"},
+    "fireworks-api": {
+        "type": "openai",
+        "label": "Fireworks",
+        "url": "https://api.fireworks.ai/inference/v1",
+        "model": "accounts/fireworks/models/glm-5p3",
+        "api_key_env": "FIREWORKS_API_KEY",
+    },
+    "cerebras-api": {"type": "openai", "label": "Cerebras", "url": "https://api.cerebras.ai/v1", "model": "gpt-oss-120b", "api_key_env": "CEREBRAS_API_KEY"},
+    "perplexity-api": {
+        "type": "responses",
+        "label": "Perplexity (web search)",
+        "url": "https://api.perplexity.ai/v1",
+        "model": "perplexity/sonar",
+        "api_key_env": "PERPLEXITY_API_KEY",
+        "extra": {"tools": [{"type": "web_search"}]},
+    },
+    "openrouter": {
+        "type": "openai",
+        "label": "OpenRouter",
+        "url": "https://openrouter.ai/api/v1",
+        "model": "openrouter/auto",
+        "api_key_env": "OPENROUTER_API_KEY",
+        "headers": {"X-OpenRouter-Title": "Penguin companion"},
+    },
+    "bedrock-api": {
+        "type": "openai",
+        "label": "Amazon Bedrock",
+        "url": "https://bedrock-runtime.${AWS_REGION}.amazonaws.com/openai/v1",
+        "model": "global.openai.gpt-6.1-sol",
+        "api_key_env": "AWS_BEARER_TOKEN_BEDROCK",
+        "requires": ["AWS_REGION"],
+    },
 }
+TYPES = ("command", "anthropic", "openai", "responses")
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2026-10-21"
@@ -58,6 +120,25 @@ class BrainError(Exception):
     pass
 
 
+_reachable: dict[str, tuple[float, bool]] = {}
+
+
+def reachable(url: str, timeout: float = 0.15) -> bool:
+    """Is something listening at this URL's host and port? (Remembered for 10 s.)"""
+    seen = _reachable.get(url)
+    if seen and time.monotonic() - seen[0] < 10:
+        return seen[1]
+    parts = urlsplit(url)
+    ok = False
+    try:
+        with socket.create_connection((parts.hostname or "localhost", parts.port or (443 if parts.scheme == "https" else 80)), timeout):
+            ok = True
+    except OSError:
+        pass
+    _reachable[url] = (time.monotonic(), ok)
+    return ok
+
+
 @dataclass
 class Brain:
     name: str
@@ -69,6 +150,11 @@ class Brain:
     api_key_env: str = ""
     api_key: str = ""
     effort: str = "low"
+    headers: dict[str, str] = field(default_factory=dict)  # extra headers; "${VAR}" is read from the environment
+    extra: dict = field(default_factory=dict)  # extra fields for the request body
+    local: bool = False  # a server on this computer: available while it's running
+    requires: list[str] = field(default_factory=list)  # other environment variables it needs
+    auto: bool | None = None  # may "auto" pick it? (default: command tools and local servers)
 
     def key(self) -> str:
         return self.api_key or (os.environ.get(self.api_key_env, "") if self.api_key_env else "")
@@ -76,14 +162,22 @@ class Brain:
     def available(self) -> bool:
         if self.type == "command":
             return bool(self.command) and shutil.which(self.command[0]) is not None
-        if self.type in ("anthropic", "openai"):
-            return bool(self.key()) or not self.api_key_env
-        return False
+        if any(not os.environ.get(var) for var in self.requires):
+            return False
+        if self.local:
+            return reachable(expand(self.url))
+        return bool(self.key()) or not self.api_key_env
+
+    def automatic(self) -> bool:
+        return self.auto if self.auto is not None else (self.type == "command" or self.local)
 
     def why_not(self) -> str:
         if self.type == "command":
             return f"{self.command[0] if self.command else 'command'} not found"
-        return f"{self.api_key_env} not set"
+        if self.local:
+            return "not running"
+        missing = [v for v in [self.api_key_env, *self.requires] if v and not os.environ.get(v)]
+        return f"{', '.join(missing)} not set" if missing else "not set up"
 
 
 def load_brains(ai_config: dict) -> dict[str, Brain]:
@@ -92,7 +186,7 @@ def load_brains(ai_config: dict) -> dict[str, Brain]:
     out: dict[str, Brain] = {}
     for name in list(PRESETS) + [n for n in user if n not in PRESETS]:
         spec = {**PRESETS.get(name, {}), **(user.get(name) or {})}
-        if spec.get("type") not in ("command", "anthropic", "openai"):
+        if spec.get("type") not in TYPES:
             continue
         out[name] = Brain(
             name=name,
@@ -104,17 +198,45 @@ def load_brains(ai_config: dict) -> dict[str, Brain]:
             api_key_env=spec.get("api_key_env", ""),
             api_key=spec.get("api_key", ""),
             effort=spec.get("effort", "low"),
+            headers={str(k): str(v) for k, v in (spec.get("headers") or {}).items()},
+            extra=dict(spec.get("extra") or {}),
+            local=bool(spec.get("local", False)),
+            requires=[str(v) for v in spec.get("requires", [])],
+            auto=spec.get("auto"),
         )
     return out
 
 
 def choose(brains: dict[str, Brain], configured: str, picked: str | None) -> Brain | None:
     """The brain to ask: the one picked from the menu, else the configured one,
-    else the first available."""
+    else the first available that "auto" may use."""
     for name in (picked, configured):
         if name and name != "auto" and name in brains and brains[name].available():
             return brains[name]
-    return next((b for b in brains.values() if b.available()), None)
+    return next((b for b in brains.values() if b.automatic() and b.available()), None)
+
+
+_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def expand(value: str) -> str:
+    """"${VAR}" from the environment, so keys needn't sit in the settings file."""
+    return _VAR.sub(lambda m: os.environ.get(m.group(1), ""), value)
+
+
+def check_url(url: str) -> None:
+    """Keys and questions go over HTTPS; plain HTTP only to this computer."""
+    parts = urlsplit(url)
+    if parts.scheme == "https":
+        return
+    host = (parts.hostname or "").lower()
+    local = host == "localhost" or host.endswith(".localhost")
+    try:
+        local = local or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        pass
+    if parts.scheme != "http" or not local:
+        raise BrainError(f"{url} isn't HTTPS; only a server on this computer may use plain HTTP")
 
 
 def system_prompt(name: str) -> str:
@@ -156,7 +278,7 @@ def anthropic_request(brain: Brain, system: str, history, question: str) -> tupl
     if brain.model in _FALLBACK_MODELS:
         headers["anthropic-beta"] = _FALLBACK_BETA
         body["fallbacks"] = "default"
-    return headers, body
+    return _custom(brain, headers, body)
 
 
 def openai_request(brain: Brain, system: str, history, question: str) -> tuple[dict, dict]:
@@ -164,6 +286,20 @@ def openai_request(brain: Brain, system: str, history, question: str) -> tuple[d
     if brain.key():
         headers["authorization"] = f"Bearer {brain.key()}"
     body = {"model": brain.model, "messages": [{"role": "system", "content": system}] + _messages(history, question)}
+    return _custom(brain, headers, body)
+
+
+def responses_request(brain: Brain, system: str, history, question: str) -> tuple[dict, dict]:
+    headers = {"content-type": "application/json"}
+    if brain.key():
+        headers["authorization"] = f"Bearer {brain.key()}"
+    body = {"model": brain.model, "instructions": system, "input": _messages(history, question)}
+    return _custom(brain, headers, body)
+
+
+def _custom(brain: Brain, headers: dict, body: dict) -> tuple[dict, dict]:
+    headers.update({k.lower(): expand(v) for k, v in brain.headers.items()})
+    body.update(brain.extra)
     return headers, body
 
 
@@ -202,6 +338,46 @@ def parse_openai(data: dict) -> str:
     return text
 
 
+def parse_responses(data: dict) -> str:
+    if data.get("error"):
+        raise BrainError(_error_message(data) or "the API returned an error")
+    text = data.get("output_text") if isinstance(data.get("output_text"), str) else ""
+    if not text:
+        parts = []
+        for item in data.get("output") or []:
+            if isinstance(item, dict) and item.get("type") == "message":
+                for part in item.get("content") or []:
+                    if isinstance(part, dict) and part.get("type") in ("output_text", "text"):
+                        parts.append(part.get("text", ""))
+        text = "".join(parts)
+    text = text.strip()
+    if not text:
+        raise BrainError("the answer came back empty")
+    return text
+
+
+def _with_model(brain: Brain, model: str) -> Brain:
+    return replace(brain, model=model)
+
+
+def first_model(data: dict) -> str:
+    """The first model a server lists at /models (a local server's loaded model)."""
+    for entry in data.get("data") or data.get("models") or []:
+        if isinstance(entry, dict) and (entry.get("id") or entry.get("name")):
+            return str(entry.get("id") or entry.get("name"))
+    raise BrainError("it has no model loaded")
+
+
+def endpoint(brain: Brain):
+    """(URL, request builder, reply parser) for an HTTP brain."""
+    base = expand(brain.url).rstrip("/")
+    if brain.type == "anthropic":
+        return expand(brain.url) or ANTHROPIC_URL, anthropic_request, parse_anthropic
+    if brain.type == "responses":
+        return base + "/responses", responses_request, parse_responses
+    return base + "/chat/completions", openai_request, parse_openai
+
+
 def clean_output(text: str) -> str:
     return _ANSI.sub("", text).strip()
 
@@ -220,6 +396,8 @@ class Asker(QObject):
         self._output_file: Path | None = None
         self._prompt_file: Path | None = None
         self._brain: Brain | None = None
+        self._parse = parse_openai
+        self._then = None
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._timed_out)
@@ -233,10 +411,20 @@ class Asker(QObject):
         self._timer.start(int(timeout_s * 1000))
         if brain.type == "command":
             self._run(brain, text_prompt(system, history, question))
-        elif brain.type == "anthropic":
-            self._post(brain.url or ANTHROPIC_URL, *anthropic_request(brain, system, history, question))
-        else:
-            self._post(brain.url.rstrip("/") + "/chat/completions", *openai_request(brain, system, history, question))
+            return
+        url, request, self._parse = endpoint(brain)
+        try:
+            check_url(url)
+        except BrainError as exc:
+            self._timer.stop()
+            error = f"{brain.label}: {exc}."
+            QTimer.singleShot(0, lambda: self.failed.emit(error))
+            return
+        if brain.model in ("", "auto"):  # a local server: ask it which model it has
+            self._then = lambda model: self._post(url, *request(_with_model(brain, model), system, history, question))
+            self._get(expand(brain.url).rstrip("/") + "/models", brain)
+            return
+        self._post(url, *request(brain, system, history, question))
 
     def cancel(self) -> None:
         self._timer.stop()
@@ -332,6 +520,28 @@ class Asker(QObject):
         reply.finished.connect(self._reply_finished)
         self._reply = reply
 
+    def _get(self, url: str, brain: Brain) -> None:
+        req = QNetworkRequest(QUrl(url))
+        if brain.key():
+            req.setRawHeader(b"authorization", f"Bearer {brain.key()}".encode())
+        reply = self._nam.get(req)
+        reply.finished.connect(self._models_listed)
+        self._reply = reply
+
+    def _models_listed(self) -> None:
+        reply, self._reply = self._reply, None
+        if reply is None:
+            return
+        raw = bytes(reply.readAll())
+        reply.deleteLater()
+        try:
+            model = first_model(json.loads(raw) if raw else {})
+        except (ValueError, BrainError) as exc:
+            self._timer.stop()
+            self.failed.emit(f"{self._brain.label}: {exc if isinstance(exc, BrainError) else 'no model list'}.")
+            return
+        self._then(model)
+
     def _reply_finished(self) -> None:
         reply, self._reply = self._reply, None
         self._timer.stop()
@@ -347,8 +557,7 @@ class Asker(QObject):
         try:
             if not data and network_error:
                 raise BrainError(network_error)
-            parse = parse_anthropic if self._brain.type == "anthropic" else parse_openai
-            self.answered.emit(parse(data))
+            self.answered.emit(self._parse(data))
         except BrainError as exc:
             self.failed.emit(f"{self._brain.label}: {exc}.")
 

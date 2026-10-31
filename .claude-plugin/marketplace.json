@@ -1,0 +1,14 @@
+{
+  "name": "penguin-companion",
+  "owner": {
+    "name": "Randy Northrup"
+  },
+  "description": "The penguin companion's plugins: an electric desktop pet that reacts to your coding agents.",
+  "plugins": [
+    {
+      "name": "penguin-companion",
+      "source": "./penguin_companion/integrations/claude/penguin-companion",
+      "description": "Lets the penguin companion react while Claude Code works: it thinks while Claude works, waves when Claude needs you, and hops when it's done."
+    }
+  ]
+}

@@ -17,6 +17,7 @@ DEFAULTS: dict[str, Any] = {
     "walk": True,
     "sleep_after_minutes": 10,
     "ai": {"brain": "auto", "timeout_seconds": 180, "brains": {}},
+    "agents": {"show_replies": False},
     "breaks": {"every_minutes": 60, "snooze_minutes": 10},
     "focus": {"minutes": 25},
     "heads_up": {
@@ -45,10 +46,13 @@ walk = true
 sleep_after_minutes = 10
 
 [ai]
-# Which brain answers your questions. "auto" picks the first one available, in
-# this order: claude, codex, gemini, grok (their command-line tools, using your
-# own login), then anthropic-api, openai-api, gemini-api, xai-api, openrouter
-# (when their API key is set). Or name one, including your own from below.
+# Which brain answers your questions. "auto" uses the first AI command-line
+# tool you're signed in to (claude, codex, gemini, muse, grok, copilot) or a
+# model server running on this computer (ollama, lmstudio, llamacpp, vllm).
+# APIs are billed per question, so "auto" never picks one: name it here or pick
+# it from the menu (anthropic-api, openai-api, gemini-api, xai-api, meta-api,
+# mistral-api, deepseek-api, groq-api, together-api, fireworks-api,
+# cerebras-api, perplexity-api, openrouter, bedrock-api), or one of your own.
 brain = "auto"
 timeout_seconds = 180
 
@@ -62,14 +66,35 @@ timeout_seconds = 180
 # type = "command"
 # command = ["my-tool", "--quiet"]
 #
-# An HTTP brain speaks the Anthropic Messages API (type = "anthropic") or the
-# OpenAI chat completions API (type = "openai"), which most providers accept:
+# An HTTP brain speaks the Anthropic Messages API (type = "anthropic"),
+# OpenAI's Responses API (type = "responses") or the OpenAI Chat Completions API
+# (type = "openai") that most providers accept. Keys come from environment
+# variables; "${VAR}" in a header is read from the environment too. Plain HTTP
+# is refused except to this computer.
 #
 # [ai.brains.my-provider]
 # type = "openai"
 # url = "https://api.example.com/v1"
 # model = "some-model"
 # api_key_env = "MY_PROVIDER_API_KEY"
+#
+# Azure OpenAI / AI Foundry (model is your deployment's name):
+#
+# [ai.brains.azure]
+# type = "responses"
+# url = "https://YOUR-RESOURCE.openai.azure.com/openai/v1"
+# model = "your-deployment"
+# api_key_env = "AZURE_OPENAI_API_KEY"
+#
+# Change a built-in one's model the same way:
+#
+# [ai.brains.openai-api]
+# model = "gpt-6-luna"
+
+[agents]
+# Show the last words of an agent's reply when it finishes. Off by default:
+# replies can hold code or secrets you'd rather not have on screen.
+show_replies = false
 
 [breaks]
 # Nudge you to take a break after this many minutes at the screen (0: off).
@@ -86,6 +111,12 @@ disk_full_percent = 90    # 0 turns disk warnings off
 updates = true            # say when system updates are waiting
 updates_every_hours = 6
 """
+
+
+def private(path: Path) -> None:
+    """Readable by you alone (settings can hold API keys)."""
+    if os.name == "posix":
+        os.chmod(path, 0o600)
 
 
 def merge(base: dict, override: dict) -> dict:
@@ -105,6 +136,7 @@ def load_config(path: Path | None = None) -> tuple[dict, str | None]:
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(TEMPLATE, encoding="utf-8")
+        private(path)
     try:
         user = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as exc:
@@ -138,4 +170,5 @@ class State:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
+        private(tmp)
         os.replace(tmp, self.path)
